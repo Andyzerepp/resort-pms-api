@@ -84,6 +84,16 @@ class Reservation(Base):
     reservation_rooms = relationship("ReservationRoom", back_populates="reservation")
     folio             = relationship("Folio", back_populates="reservation", uselist=False)
 
+    @property
+    def checkin_deviation(self):
+        from app.services.reservation_service import get_checkin_deviation
+        return get_checkin_deviation(self)
+
+    @property
+    def checkout_deviation(self):
+        from app.services.reservation_service import get_checkout_deviation
+        return get_checkout_deviation(self)
+
 class ReservationRoom(Base):
     __tablename__ = "reservation_rooms"
     id              = Column(String, primary_key=True, default=gen_uuid)

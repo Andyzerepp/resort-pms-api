@@ -1,11 +1,55 @@
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from app.models.models import (
-    Reservation, ReservationRoom, Room, Folio, FolioCharge, Housekeeping
+    Reservation, ReservationRoom, Room, Folio, FolioCharge, Housekeeping, ResortSettings
 )
 from app.services.availability_service import is_room_available
 from app.services.folio_service import post_charge
+
+GRACE_PERIOD_HOURS = 1
+
+# Philippines has used a fixed UTC+8 offset with no DST since 1978 — a plain
+# fixed-offset timezone avoids depending on the `tzdata` package for zoneinfo.
+_MANILA_TZ = timezone(timedelta(hours=8))
+
+
+def _scheduled_utc_naive(d: date, time_str: str) -> datetime:
+    """Combine a date with a Manila-local 'HH:MM' string into a naive UTC
+    datetime — matching how `checked_in_at`/`checked_out_at` come back from
+    SQLite (stored via datetime.now(timezone.utc), tzinfo stripped on read)."""
+    hour, minute = (int(part) for part in time_str.split(":"))
+    manila_dt = datetime(d.year, d.month, d.day, hour, minute, tzinfo=_MANILA_TZ)
+    return manila_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _deviation(scheduled: datetime, actual: datetime) -> dict:
+    """None when actual is within the grace period of scheduled — grace is a
+    threshold only, not subtracted from the displayed magnitude. Beyond grace,
+    returns {'direction': 'early'|'late', 'minutes': int} — the full raw gap."""
+    if scheduled is None or actual is None:
+        return None
+    diff_minutes = (actual - scheduled).total_seconds() / 60
+    grace_minutes = GRACE_PERIOD_HOURS * 60
+    if abs(diff_minutes) <= grace_minutes:
+        return None
+    if diff_minutes > 0:
+        return {"direction": "late", "minutes": round(diff_minutes)}
+    return {"direction": "early", "minutes": round(-diff_minutes)}
+
+
+def get_checkin_deviation(reservation) -> dict:
+    if not (reservation.checkin_time and reservation.checked_in_at):
+        return None
+    scheduled = _scheduled_utc_naive(reservation.check_in, reservation.checkin_time)
+    return _deviation(scheduled, reservation.checked_in_at)
+
+
+def get_checkout_deviation(reservation) -> dict:
+    if not (reservation.checkout_time and reservation.checked_out_at):
+        return None
+    scheduled = _scheduled_utc_naive(reservation.check_out, reservation.checkout_time)
+    return _deviation(scheduled, reservation.checked_out_at)
 
 
 def create_reservation(db: Session, guest_id: str, check_in: date, check_out: date, source: str, rooms: list):
@@ -28,11 +72,18 @@ def create_reservation(db: Session, guest_id: str, check_in: date, check_out: da
     nights = (check_out - check_in).days
     total = sum(float(r.rate_at_booking) * nights for r in rooms)
 
+    # Pick up check-in/check-out times from resort defaults (settings row may not exist yet)
+    settings = db.query(ResortSettings).first()
+    checkin_time = settings.default_checkin_time if settings else "14:00"
+    checkout_time = settings.default_checkout_time if settings else "12:00"
+
     # Create reservation
     reservation = Reservation(
         guest_id=guest_id,
         check_in=check_in,
         check_out=check_out,
+        checkin_time=checkin_time,
+        checkout_time=checkout_time,
         source=source,
         total_amount=total,
         status="confirmed",
@@ -180,6 +231,24 @@ def check_out_reservation(db: Session, reservation_id: str):
 
     reservation.status = "checked_out"
     reservation.checked_out_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
+def update_reservation_times(db: Session, reservation_id: str, checkin_time: str = None, checkout_time: str = None):
+    """Admin edits the scheduled check-in/check-out time for a reservation."""
+    reservation = db.query(Reservation).filter(Reservation.id == reservation_id).first()
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    if reservation.status in ["checked_out", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Cannot edit times on a {reservation.status} reservation")
+
+    if checkin_time is not None:
+        reservation.checkin_time = checkin_time
+    if checkout_time is not None:
+        reservation.checkout_time = checkout_time
+
     db.commit()
     db.refresh(reservation)
     return reservation

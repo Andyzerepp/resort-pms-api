@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.core.database import get_db
-from app.core.deps import get_or_404
+from app.core.deps import get_or_404, validate_time_string
 from app.models.models import Reservation, User
 from app.schemas.reservation import ReservationCreate, ReservationUpdate, ReservationResponse
 from app.services import reservation_service
@@ -49,6 +49,24 @@ def request_checkout(reservation_id: str, db: Session = Depends(get_db), current
 @router.patch("/{reservation_id}/check-out", response_model=ReservationResponse)
 def check_out(reservation_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_role("admin", "front_desk"))):
     return reservation_service.check_out_reservation(db, reservation_id)
+
+
+class ReservationTimesUpdate(BaseModel):
+    checkin_time: Optional[str] = None
+    checkout_time: Optional[str] = None
+
+@router.patch("/{reservation_id}/times", response_model=ReservationResponse)
+def update_times(reservation_id: str, data: ReservationTimesUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_role("admin"))):
+    if data.checkin_time is not None:
+        validate_time_string(data.checkin_time, "Check-in time")
+    if data.checkout_time is not None:
+        validate_time_string(data.checkout_time, "Check-out time")
+    return reservation_service.update_reservation_times(
+        db=db,
+        reservation_id=reservation_id,
+        checkin_time=data.checkin_time,
+        checkout_time=data.checkout_time
+    )
 
 
 class CancelRequest(BaseModel):

@@ -20,6 +20,11 @@ class ReservationRoomResponse(BaseModel):
         from_attributes = True
 
 
+class DeviationInfo(BaseModel):
+    direction: str  # "early" | "late"
+    minutes: int
+
+
 class ReservationBase(BaseModel):
     guest_id: str
     check_in: date
@@ -44,6 +49,10 @@ class ReservationUpdate(BaseModel):
 class ReservationResponse(ReservationBase):
     id: str
     status: str
+    checkin_time: Optional[str] = None
+    checkout_time: Optional[str] = None
+    checkin_deviation: Optional[DeviationInfo] = None
+    checkout_deviation: Optional[DeviationInfo] = None
     total_amount: Optional[Decimal] = None
     created_at: datetime
     confirmed_at: Optional[datetime] = None

@@ -35,6 +35,11 @@ def add_charge(
     if folio.status not in ["open", "settled"]:
         raise HTTPException(status_code=400, detail="Cannot add charges to this folio")
 
+    if data.amount is None or data.amount <= 0:
+        raise HTTPException(status_code=400, detail="Charge amount must be greater than ₱0")
+    if not data.description or not data.description.strip():
+        raise HTTPException(status_code=400, detail="Charge description is required")
+
     charge_data = data.model_dump()
     charge_data["posted_by"] = current_user.username
     charge = FolioCharge(folio_id=folio_id, **charge_data)
