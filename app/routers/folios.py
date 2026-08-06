@@ -7,6 +7,7 @@ from app.models.models import Folio, FolioCharge, Payment, Housekeeping, Reserva
 from app.schemas.folio import (
     FolioResponse, FolioChargeCreate, FolioChargeResponse, PaymentCreate, PaymentResponse
 )
+from app.services.folio_service import recompute_folio_totals
 from app.core.auth import require_role, get_current_user
 from datetime import datetime, timezone
 from pydantic import BaseModel
@@ -21,7 +22,11 @@ router = APIRouter(
 
 @router.get("/{folio_id}", response_model=FolioResponse)
 def get_folio(folio_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_role("admin", "front_desk"))):
-    return get_or_404(db, Folio, folio_id, "Folio not found")
+    folio = get_or_404(db, Folio, folio_id, "Folio not found")
+    recompute_folio_totals(db, folio)
+    db.commit()
+    db.refresh(folio)
+    return folio
 
 
 @router.post("/{folio_id}/charges", response_model=FolioChargeResponse, status_code=201)
@@ -44,9 +49,9 @@ def add_charge(
     charge_data["posted_by"] = current_user.username
     charge = FolioCharge(folio_id=folio_id, **charge_data)
     db.add(charge)
+    db.flush()
 
-    folio.total_charges = Decimal(str(folio.total_charges)) + Decimal(str(data.amount))
-    folio.balance = Decimal(str(folio.total_charges)) - Decimal(str(folio.total_payments))
+    recompute_folio_totals(db, folio)
     if folio.balance > 0:
         folio.status = "open"
 
@@ -90,6 +95,9 @@ def add_payment(
             detail=f"Reference number is required for {data.method.replace('_', ' ')} payments"
         )
 
+    # Recompute before reading balance, so the tender-capping math below is
+    # never based on a stale stored value
+    recompute_folio_totals(db, folio)
     balance = Decimal(str(folio.balance))
     tendered = Decimal(str(data.amount))
 
@@ -112,14 +120,11 @@ def add_payment(
         received_by=current_user.username,
     )
     db.add(payment)
+    db.flush()
 
-    folio.total_payments = Decimal(str(folio.total_payments)) + recorded_amount
-    folio.balance = Decimal(str(folio.total_charges)) - Decimal(str(folio.total_payments))
-
-    if folio.balance <= 0:
-        folio.balance = Decimal("0")
-        if reservation and reservation.status == "checked_out":
-            folio.status = "settled"
+    recompute_folio_totals(db, folio)
+    if folio.balance <= 0 and reservation and reservation.status == "checked_out":
+        folio.status = "settled"
 
     db.commit()
     db.refresh(payment)
@@ -160,12 +165,9 @@ def void_charge(
     charge.voided = True
     charge.voided_by = admin.username          # the authorizing admin, not the FD on shift
     charge.voided_at = datetime.now(timezone.utc)
+    db.flush()
 
-    folio.total_charges = Decimal(str(folio.total_charges)) - Decimal(str(charge.amount))
-    folio.balance = Decimal(str(folio.total_charges)) - Decimal(str(folio.total_payments))
-
-    if folio.balance <= 0:
-        folio.balance = Decimal("0")
+    recompute_folio_totals(db, folio)
 
     db.commit()
     db.refresh(charge)
