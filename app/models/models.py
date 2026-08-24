@@ -103,6 +103,10 @@ class ReservationRoom(Base):
     reservation = relationship("Reservation", back_populates="reservation_rooms")
     room        = relationship("Room", back_populates="reservation_rooms")
 
+    @property
+    def room_number(self):
+        return self.room.room_number
+
 
 class Folio(Base):
     __tablename__ = "folios"

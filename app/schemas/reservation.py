@@ -14,6 +14,7 @@ class ReservationRoomCreate(BaseModel):
 class ReservationRoomResponse(BaseModel):
     id: str
     room_id: str
+    room_number: Optional[str] = None
     rate_at_booking: Decimal
 
     class Config:

@@ -1,11 +1,12 @@
+from decimal import Decimal
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from datetime import date, datetime, timezone, timedelta
 from app.models.models import (
-    Reservation, ReservationRoom, Room, Folio, FolioCharge, Housekeeping, ResortSettings
+    Reservation, ReservationRoom, Room, RoomType, Folio, FolioCharge, Housekeeping, ResortSettings
 )
 from app.services.availability_service import is_room_available
-from app.services.folio_service import post_charge
+from app.services.folio_service import post_charge, recompute_folio_totals
 
 GRACE_PERIOD_HOURS = 1
 
@@ -248,6 +249,73 @@ def update_reservation_times(db: Session, reservation_id: str, checkin_time: str
         reservation.checkin_time = checkin_time
     if checkout_time is not None:
         reservation.checkout_time = checkout_time
+
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
+def reassign_room(db: Session, reservation_id: str, reservation_room_id: str, new_room_id: str, changed_by: str, reason: str = None):
+    """Move a reservation from one room to another. Billed pro-rata: nights
+    already elapsed keep the old rate, remaining nights bill at the new
+    room's rate — no separate swap fee. Gate is availability only; allowed
+    at any status short of checked_out/cancelled, per resort policy."""
+    reservation = db.query(Reservation).filter(Reservation.id == reservation_id).first()
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    if reservation.status in ["checked_out", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Cannot change rooms on a {reservation.status} reservation")
+
+    res_room = db.query(ReservationRoom).filter(
+        ReservationRoom.id == reservation_room_id,
+        ReservationRoom.reservation_id == reservation_id,
+    ).first()
+    if not res_room:
+        raise HTTPException(status_code=404, detail="This room is not part of the reservation")
+
+    old_room = db.query(Room).filter(Room.id == res_room.room_id).first()
+    new_room = db.query(Room).filter(Room.id == new_room_id).first()
+    if not new_room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    if new_room.id == old_room.id:
+        raise HTTPException(status_code=400, detail="Already assigned to that room")
+
+    if not is_room_available(db, new_room.id, reservation.check_in, reservation.check_out, exclude_reservation_id=reservation.id):
+        raise HTTPException(status_code=400, detail=f"Room {new_room.room_number} is not available for these dates")
+
+    new_room_type = db.query(RoomType).filter(RoomType.id == new_room.room_type_id).first()
+    old_rate = Decimal(str(res_room.rate_at_booking))
+    new_rate = Decimal(str(new_room_type.base_rate))
+
+    total_nights = (reservation.check_out - reservation.check_in).days
+    today_manila = datetime.now(_MANILA_TZ).date()
+    nights_elapsed = max(0, min((today_manila - reservation.check_in).days, total_nights))
+    nights_remaining = total_nights - nights_elapsed
+
+    original_amount = old_rate * total_nights
+    prorated_amount = (old_rate * nights_elapsed) + (new_rate * nights_remaining)
+    adjustment = prorated_amount - original_amount
+
+    if reservation.status in ["checked_in", "checkout_requested"]:
+        old_room.status = "dirty"
+        new_room.status = "occupied"
+
+    res_room.room_id = new_room.id
+    res_room.rate_at_booking = new_rate
+
+    if adjustment != 0 and reservation.folio:
+        description = f"Room change: {old_room.room_number} → {new_room.room_number} ({nights_elapsed}n @ ₱{old_rate}, {nights_remaining}n @ ₱{new_rate})"
+        if reason:
+            description += f" — {reason}"
+        db.add(FolioCharge(
+            folio_id=reservation.folio.id,
+            charge_type="room_change",
+            description=description,
+            amount=adjustment,
+            posted_by=changed_by,
+        ))
+        db.flush()
+        recompute_folio_totals(db, reservation.folio)
 
     db.commit()
     db.refresh(reservation)

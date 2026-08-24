@@ -69,6 +69,22 @@ def update_times(reservation_id: str, data: ReservationTimesUpdate, db: Session 
     )
 
 
+class RoomReassignRequest(BaseModel):
+    new_room_id: str
+    reason: Optional[str] = None
+
+@router.patch("/{reservation_id}/rooms/{reservation_room_id}/reassign", response_model=ReservationResponse)
+def reassign_room(reservation_id: str, reservation_room_id: str, data: RoomReassignRequest, db: Session = Depends(get_db), current_user: User = Depends(require_role("admin", "front_desk"))):
+    return reservation_service.reassign_room(
+        db=db,
+        reservation_id=reservation_id,
+        reservation_room_id=reservation_room_id,
+        new_room_id=data.new_room_id,
+        changed_by=current_user.username,
+        reason=data.reason,
+    )
+
+
 class CancelRequest(BaseModel):
     cancelled_by: Optional[str] = None
     cancellation_reason: Optional[str] = None
