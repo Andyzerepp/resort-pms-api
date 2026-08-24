@@ -1,7 +1,13 @@
 """
 Seed script — populates the database with initial users, room types, rooms, and settings.
 Run this once after a fresh migration: python seed.py
+
+Account passwords are read from environment variables (SEED_ADMIN_PASSWORD,
+SEED_FRONTDESK_PASSWORD, SEED_HOUSEKEEPING_PASSWORD) so real credentials
+never sit hardcoded in source. Unset vars fall back to "changeme" — fine for
+a throwaway local database, but change it before using the account for real.
 """
+import os
 from app.core.database import SessionLocal
 from app.models.models import User, RoomType, Room, ResortSettings
 import bcrypt
@@ -13,9 +19,9 @@ def hash_password(password: str) -> str:
 
 # --- Users ---
 users = [
-    {"username": "admin", "full_name": "Andrea Perez", "password": "resort2026", "role": "admin"},
-    {"username": "frontdesk", "full_name": "Front Desk Staff", "password": "resort2026", "role": "front_desk"},
-    {"username": "housekeeping", "full_name": "Housekeeping Staff", "password": "resort2026", "role": "housekeeping"},
+    {"username": "admin", "full_name": "Admin", "password": os.getenv("SEED_ADMIN_PASSWORD", "changeme"), "role": "admin"},
+    {"username": "frontdesk", "full_name": "Front Desk Staff", "password": os.getenv("SEED_FRONTDESK_PASSWORD", "changeme"), "role": "front_desk"},
+    {"username": "housekeeping", "full_name": "Housekeeping Staff", "password": os.getenv("SEED_HOUSEKEEPING_PASSWORD", "changeme"), "role": "housekeeping"},
 ]
 
 for u in users:
